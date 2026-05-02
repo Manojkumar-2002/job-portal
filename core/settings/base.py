@@ -24,7 +24,9 @@ INSTALLED_APPS = [
     "rest_framework",
     "oauth2_provider",
     # local
+    "apps.common",
     "apps.users",
+    "apps.access_control",
 ]
 
 MIDDLEWARE = [
