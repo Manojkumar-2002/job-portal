@@ -27,6 +27,8 @@ INSTALLED_APPS = [
     "apps.common",
     "apps.users",
     "apps.access_control",
+    "apps.profiles",
+    "django.contrib.postgres"
 ]
 
 MIDDLEWARE = [
