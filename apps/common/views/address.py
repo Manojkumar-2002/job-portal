@@ -1,48 +1,48 @@
 from django.db.models import Q
-from rest_framework import status, viewsets, serializers
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-
+from apps.common.views.base_view import BaseAPIViewSet 
 from apps.common.models import Address
 from apps.common.serializers import AddressSerializer
 from apps.profiles.models import EmployerProfile, JobSeekerProfile
-from ..constants import ProfileType
+from rest_framework.exceptions import ValidationError
+from django.db import transaction
+from apps.access_control.services.assign_role import assign_role_to_user
 
+# ... (inside your AddressViewSet)
 
-class AddressViewSet(viewsets.ModelViewSet):
+class AddressViewSet(BaseAPIViewSet):
     queryset = Address.objects.all()
     serializer_class = AddressSerializer
     permission_classes = [IsAuthenticated]
 
-    def get_queryset(self):
-        if self.request.user.is_staff:
-            return Address.objects.all()
-        return Address.objects.filter(
-            Q(jobseeker_profile__user=self.request.user)
-            | Q(employer_profile__user=self.request.user)
-        ).distinct()
+    def perform_create(self, serializer):
+        # 1. Determine the source of truth
+        is_employer_persona = self.request.is_employer
+        is_jobseeker_persona = self.request.is_jobseeker
 
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer)
-        address = serializer.instance
+        if not (is_employer_persona or is_jobseeker_persona):
+            raise ValidationError("You must be acting as an Employer or Job Seeker.")
 
-        profile_type = serializer.validated_data.get("profile_type")
-        profile = self._get_profile(profile_type, request.user)
-        profile.address = address
-        profile.save()
+        # 2. Bundle everything in a transaction for safety
+        with transaction.atomic():
+            # Save the address record first
+            address = serializer.save()
 
-        headers = self.get_success_headers(serializer.data)
-        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+            # 3. Create profile and assign role ONLY if this is the first time
+            if is_employer_persona:
+                profile, created = EmployerProfile.objects.get_or_create(
+                    user=self.request.user,
+                    defaults={"company_name": ""}
+                )
+                if created:
+                    assign_role_to_user(self.request.user, 'employer')
+            else:
+                profile, created = JobSeekerProfile.objects.get_or_create(
+                    user=self.request.user
+                )
+                if created:
+                    assign_role_to_user(self.request.user, 'job_seeker')
 
-    def _get_profile(self, profile_type, user):
-        if profile_type == ProfileType.JOB_SEEKER:
-            profile, _ = JobSeekerProfile.objects.get_or_create(user=user)
-        else:
-            profile, _ = EmployerProfile.objects.get_or_create(
-                user=user,
-                defaults={"company_name": ""},
-            )
-
-        return profile
+            # 4. Link address
+            profile.address = address
+            profile.save()

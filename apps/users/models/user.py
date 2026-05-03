@@ -52,3 +52,9 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
             return
         f = Fernet(settings.TOTP_ENCRYPTION_KEY.encode())
         self._totp_secret = f.encrypt(raw_secret.encode()).decode()
+        
+    class Meta:
+        db_table = "users_customuser"
+        verbose_name = "User"
+        verbose_name_plural = "Users"
+        ordering = ["-created_at"]

@@ -71,6 +71,13 @@ class JobSeekerProfileSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "user", "created_at", "updated_at"]
+        
+    def validate(self, data):
+        user = self.context['request'].user
+        # Check if the profile already exists for this user
+        if JobSeekerProfile.objects.filter(user=user).exists():
+            raise serializers.ValidationError("You already have a profile. Use update instead.")
+        return data
 
 
 class JobSeekerProfileDetailSerializer(serializers.ModelSerializer):

@@ -1,0 +1,1 @@
+from .set_profile import SetPersonaView

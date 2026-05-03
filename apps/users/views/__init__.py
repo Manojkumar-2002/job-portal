@@ -1,1 +1,1 @@
-from .auth_view import LoginView, MeView, RefreshTokenView, RegisterView, RevokeTokenView, TOTPVerifyView
+from .auth_view import LoginView, RefreshTokenView, RegisterView, RevokeTokenView, TOTPVerifyView, AuthStatusView

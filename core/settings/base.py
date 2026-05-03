@@ -13,33 +13,41 @@ environ.Env.read_env(BASE_DIR / ".env")
 
 SECRET_KEY = env("SECRET_KEY")
 
-INSTALLED_APPS = [
+DEFAULT = [
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    # third party
+    "django.contrib.postgres",  # Moved here: It's part of Django Core
+]
+
+THIRD_PARTY = [
     "rest_framework",
     "oauth2_provider",
-    # local
+]
+
+USER_DEFINED = [
     "apps.common",
     "apps.users",
     "apps.access_control",
     "apps.profiles",
-    "django.contrib.postgres"
 ]
 
+INSTALLED_APPS = DEFAULT + THIRD_PARTY + USER_DEFINED
+
 MIDDLEWARE = [
+    "apps.common.middlewares.global_exception_middleware.GlobalExceptionMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    'apps.common.middlewares.profile_context_middleware.ProfileContextMiddleware',
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    "core.exceptions.GlobalExceptionMiddleware",
+
 ]
 
 ROOT_URLCONF = "core.urls"
@@ -91,7 +99,7 @@ REST_FRAMEWORK = {
         "anon": "20/minute",
         "user": "100/minute",
     },
-    "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
+    "EXCEPTION_HANDLER": "apps.common.exceptions.drf_exception_handler.custom_exception_handler",
 }
 
 OAUTH2_PROVIDER = {
