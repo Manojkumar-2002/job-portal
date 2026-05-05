@@ -9,7 +9,7 @@ from apps.profiles.serializers import (
 )
 from apps.common.permissions import IsOwner, IsJobSeeker
 from django.db import transaction
-from apps.access_control.services import assign_role_to_user
+from apps.access_control.services.assign_role import assign_role_to_user
 
 
         
