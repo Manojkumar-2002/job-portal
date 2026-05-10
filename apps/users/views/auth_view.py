@@ -1,148 +1,150 @@
-import logging
-
-from django.conf import settings
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.users.models import CustomUser
+# Standardized Response Handler
+from apps.common.utils.response_utils import ResponseHandler
+from apps.profiles.models import EmployerProfile, JobSeekerProfile
 from apps.users.serializers import LoginSerializer, RegisterSerializer, TOTPVerifySerializer, UserSerializer
 from apps.users.services import TokenService, TOTPService
 from apps.users.utils import REFRESH_COOKIE, delete_refresh_cookie, set_refresh_cookie
-
-logger = logging.getLogger(__name__)
-
+from django.conf import settings
+from apps.profiles.serializers import JobSeekerProfileSerializer, EmployerProfileSerializer
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        try:
-            serializer = RegisterSerializer(data=request.data)
-            serializer.is_valid(raise_exception=True)
-            user = serializer.save()
-            return Response({"user": UserSerializer(user).data}, status=status.HTTP_201_CREATED)
-        except Exception as e:
-            logger.error("Register error: %s", str(e))
-            raise
-
+        serializer = RegisterSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        return ResponseHandler.success_response(
+            message = "Registration successful",
+            data={"user": UserSerializer(user).data},
+            status_code=status.HTTP_201_CREATED
+        )
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        try:
-            serializer = LoginSerializer(data=request.data)
-            serializer.is_valid(raise_exception=True)
-            user = serializer.validated_data["user"]
+        serializer = LoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.validated_data["user"]
 
-            if not user.is_totp_enabled:
-                TOTPService.enable_totp(user)
-                uri = TOTPService.get_provisioning_uri(user)
-                qr_code = TOTPService.generate_qr_base64(uri)
-                return Response(
-                    {
-                        "message": "Credentials validated. TOTP has been set up, scan the QR and enter OTP to continue.",
-                        "totp_required": True,
-                        "email": user.email,
-                        "qr_code": qr_code,
-                    },
-                    status=status.HTTP_200_OK,
-                )
+        response_data = {"email": user.email, "totp_required": True}
+        
+        # Handle TOTP setup if not enabled
+        if not user.is_totp_enabled:
+            TOTPService.enable_totp(user)
+            uri = TOTPService.get_provisioning_uri(user)
+            response_data["qr_code"] = TOTPService.generate_qr_base64(uri)
+            message= "TOTP set up. Scan QR to continue."
+        else:
+            message = "Please enter your OTP to continue."
 
-            return Response(
-                {
-                    "message": "Credentials validated. Please enter your OTP to continue.",
-                    "totp_required": True,
-                    "email": user.email,
-                },
-                status=status.HTTP_200_OK,
-            )
-        except Exception as e:
-            logger.error("Login error: %s", str(e))
-            raise
+        return ResponseHandler.success_response(data=response_data, message=message)
 
 
 class TOTPVerifyView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        try:
-            serializer = TOTPVerifySerializer(data=request.data)
-            serializer.is_valid(raise_exception=True)
+        # 1. Validate (Handles User lookup and OTP structural validation)
+        serializer = TOTPVerifySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        user = serializer.validated_data["user"]
+        otp_code = serializer.validated_data["otp_code"]
+        bypass_otps = getattr(settings, "BYPASS_OTPS", [])
 
-            try:
-                user = CustomUser.objects.get(email=serializer.validated_data["email"])
-            except CustomUser.DoesNotExist:
-                return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
-
-            if not user.is_totp_enabled:
-                return Response({"error": "TOTP not enabled"}, status=status.HTTP_400_BAD_REQUEST)
-
-            otp_code = serializer.validated_data["otp_code"]
-            bypass_otps = getattr(settings, "BYPASS_OTPS", [])
-
-            is_valid = otp_code in bypass_otps or TOTPService.verify(user, otp_code)
-            if not is_valid:
-                return Response({"error": "Invalid OTP"}, status=status.HTTP_401_UNAUTHORIZED)
-
-            tokens = TokenService.create_tokens(user)
-            response = Response(
-                {"user": UserSerializer(user).data, "access_token": tokens["access_token"]},
-                status=status.HTTP_200_OK,
+        # 2. Verify OTP
+        if otp_code not in bypass_otps and not TOTPService.verify(user, otp_code):
+            return ResponseHandler.error_response(
+                message="Invalid OTP", 
+                status_code=status.HTTP_401_UNAUTHORIZED
             )
-            return set_refresh_cookie(response, tokens["refresh_token"])
-        except Exception as e:
-            logger.error("TOTP verify error: %s", str(e))
-            raise
 
+        # 3. Create Tokens
+        tokens = TokenService.create_tokens(user)
+
+    
+        # Fetch the profiles efficiently
+        # Using .first() is better than .exists() here because we actually need the data
+        employer_profile = EmployerProfile.objects.filter(user=user).first()
+        jobseeker_profile = JobSeekerProfile.objects.filter(user=user).first()
+
+        response_data = {
+            "user": UserSerializer(user).data,
+            "access_token": tokens["access_token"],
+            "profile_context": {
+                "employer": EmployerProfileSerializer(employer_profile).data if employer_profile else None,
+                "jobseeker": JobSeekerProfileSerializer(jobseeker_profile).data if jobseeker_profile else None,
+            }
+        }
+
+        # 5. Success Response
+        response = ResponseHandler.success_response(
+            message="Login successful",
+            data=response_data
+        )
+        
+        # 6. Set HttpOnly Refresh Cookie
+        return set_refresh_cookie(response, tokens["refresh_token"])
+
+
+class AuthStatusView(APIView):
+    """
+    Returns the current user's profile and state context.
+    Used by the frontend to re-hydrate state on page refresh.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        
+        employer_profile = EmployerProfile.objects.filter(user=user).first()
+        jobseeker_profile = JobSeekerProfile.objects.filter(user=user).first()
+
+        response_data = {
+            "user": UserSerializer(user).data,
+            "profile_context": {
+                "employer": EmployerProfileSerializer(employer_profile).data if employer_profile else None,
+                "jobseeker": JobSeekerProfileSerializer(jobseeker_profile).data if jobseeker_profile else None,
+            }
+        }
+
+      
+
+        return ResponseHandler.success_response(
+            message="User status retrieved",
+            data=response_data
+        )
 
 class RefreshTokenView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        try:
-            refresh_token = request.COOKIES.get(REFRESH_COOKIE)
-            if not refresh_token:
-                return Response({"error": "Refresh token not found"}, status=status.HTTP_400_BAD_REQUEST)
+        refresh_token = request.COOKIES.get(REFRESH_COOKIE)
+        if not refresh_token:
+            return ResponseHandler.error_response(message="Refresh token not found", status_code=status.HTTP_400_BAD_REQUEST)
 
-            tokens, error = TokenService.refresh_access_token(refresh_token)
-            if error:
-                return Response({"error": error}, status=status.HTTP_401_UNAUTHORIZED)
+        tokens, error = TokenService.refresh_access_token(refresh_token)
+        if error:
+            return ResponseHandler.error_response(message=error, status_code=status.HTTP_401_UNAUTHORIZED)
 
-            return Response(tokens, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error("Token refresh error: %s", str(e))
-            raise
-
+        return ResponseHandler.success_response(data=tokens)
 
 class RevokeTokenView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        try:
-            refresh_token = request.COOKIES.get(REFRESH_COOKIE)
-            if not refresh_token:
-                return Response({"error": "Refresh token not found"}, status=status.HTTP_400_BAD_REQUEST)
+        refresh_token = request.COOKIES.get(REFRESH_COOKIE)
+        if not refresh_token:
+            return ResponseHandler.error_response(message="Refresh token not found", status_code=status.HTTP_400_BAD_REQUEST)
 
-            revoked = TokenService.revoke_token(refresh_token)
-            if not revoked:
-                return Response({"error": "Invalid refresh token"}, status=status.HTTP_400_BAD_REQUEST)
+        if not TokenService.revoke_token(refresh_token):
+            return ResponseHandler.error_response(message="Invalid refresh token", status_code=status.HTTP_400_BAD_REQUEST)
 
-            response = Response({"message": "Logged out successfully"}, status=status.HTTP_200_OK)
-            return delete_refresh_cookie(response)
-        except Exception as e:
-            logger.error("Token revoke error: %s", str(e))
-            raise
-
-
-class MeView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        try:
-            return Response(UserSerializer(request.user).data)
-        except Exception as e:
-            logger.error("Me view error: %s", str(e))
-            raise
+        response = ResponseHandler.success_response(message="Logged out successfully")
+        return delete_refresh_cookie(response)

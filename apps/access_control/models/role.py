@@ -4,7 +4,7 @@ from apps.access_control.enums import RoleName
 
 
 class Role(AuditTrial):
-    name = models.CharField(max_length=50, choices=RoleName.choices)
+    name = models.CharField(max_length=50)
     description = models.TextField(blank=True)
 
     def __str__(self):
