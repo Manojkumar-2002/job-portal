@@ -9,6 +9,7 @@ from apps.users.serializers import LoginSerializer, RegisterSerializer, TOTPVeri
 from apps.users.services import TokenService, TOTPService
 from apps.users.utils import REFRESH_COOKIE, delete_refresh_cookie, set_refresh_cookie
 from django.conf import settings
+from apps.profiles.serializers import JobSeekerProfileSerializer, EmployerProfileSerializer
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
@@ -67,21 +68,25 @@ class TOTPVerifyView(APIView):
         # 3. Create Tokens
         tokens = TokenService.create_tokens(user)
 
-        # 4. State Hydration: Check for existing profiles to guide the frontend
-        has_employer = EmployerProfile.objects.filter(user=user).exists()
-        has_jobseeker = JobSeekerProfile.objects.filter(user=user).exists()
+    
+        # Fetch the profiles efficiently
+        # Using .first() is better than .exists() here because we actually need the data
+        employer_profile = EmployerProfile.objects.filter(user=user).first()
+        jobseeker_profile = JobSeekerProfile.objects.filter(user=user).first()
+
+        response_data = {
+            "user": UserSerializer(user).data,
+            "access_token": tokens["access_token"],
+            "profile_context": {
+                "employer": EmployerProfileSerializer(employer_profile).data if employer_profile else None,
+                "jobseeker": JobSeekerProfileSerializer(jobseeker_profile).data if jobseeker_profile else None,
+            }
+        }
 
         # 5. Success Response
         response = ResponseHandler.success_response(
             message="Login successful",
-            data={
-                "user": UserSerializer(user).data,
-                "access_token": tokens["access_token"],
-                "user_context": {  # Hydrate frontend with role status
-                    "has_employer": has_employer,
-                    "has_jobseeker": has_jobseeker,
-                }
-            }
+            data=response_data
         )
         
         # 6. Set HttpOnly Refresh Cookie
@@ -98,19 +103,22 @@ class AuthStatusView(APIView):
     def get(self, request):
         user = request.user
         
-        # Check profile status (Same logic as login)
-        has_employer = EmployerProfile.objects.filter(user=user).exists()
-        has_jobseeker = JobSeekerProfile.objects.filter(user=user).exists()
+        employer_profile = EmployerProfile.objects.filter(user=user).first()
+        jobseeker_profile = JobSeekerProfile.objects.filter(user=user).first()
+
+        response_data = {
+            "user": UserSerializer(user).data,
+            "profile_context": {
+                "employer": EmployerProfileSerializer(employer_profile).data if employer_profile else None,
+                "jobseeker": JobSeekerProfileSerializer(jobseeker_profile).data if jobseeker_profile else None,
+            }
+        }
+
+      
 
         return ResponseHandler.success_response(
             message="User status retrieved",
-            data={
-                "user": UserSerializer(user).data,
-                "user_context": {
-                    "has_employer": has_employer,
-                    "has_jobseeker": has_jobseeker,
-                }
-            }
+            data=response_data
         )
 
 class RefreshTokenView(APIView):
